@@ -27,6 +27,9 @@ var dash_cooldown := 0.0
 var dash_timer := 0.0
 var invulnerable := 0.0
 var last_move := Vector2(0.0, -1.0)
+var player_model: Node3D
+var player_attack_anim := 0.0
+var anim_clock := 0.0
 
 var hp_bar: ProgressBar
 var wave_label: Label
@@ -58,6 +61,8 @@ func _process(delta: float) -> void:
 	dash_cooldown = maxf(0.0, dash_cooldown - delta)
 	dash_timer = maxf(0.0, dash_timer - delta)
 	invulnerable = maxf(0.0, invulnerable - delta)
+	player_attack_anim = maxf(0.0, player_attack_anim - delta)
+	anim_clock += delta
 
 	_update_player(delta)
 	_update_enemies(delta)
@@ -173,9 +178,9 @@ func _spawn_player() -> void:
 	player.name = "Player"
 	add_child(player)
 
-	var model := PLAYER_MODEL.instantiate() as Node3D
-	model.scale = Vector3.ONE * 1.8
-	player.add_child(model)
+	player_model = PLAYER_MODEL.instantiate() as Node3D
+	player_model.scale = Vector3.ONE * 1.8
+	player.add_child(player_model)
 
 	var ring := MeshInstance3D.new()
 	var cylinder := CylinderMesh.new()
@@ -218,6 +223,8 @@ func _update_player(delta: float) -> void:
 		var look_target := player.global_position + Vector3(move.x, 0.0, move.y)
 		player.look_at(look_target, Vector3.UP)
 
+	_animate_character(player_model, move.length(), anim_clock * 8.5, player_attack_anim, false)
+
 
 func _try_dash() -> void:
 	if dash_cooldown > 0.0 or game_over:
@@ -234,6 +241,7 @@ func _shoot() -> void:
 	if target.is_empty():
 		return
 	attack_cooldown = 0.30
+	player_attack_anim = 0.22
 	var target_node := target["node"] as Node3D
 	var origin := player.global_position + Vector3(0.0, 0.75, 0.0)
 	var direction := (target_node.global_position + Vector3(0.0, 0.65, 0.0) - origin).normalized()
@@ -329,7 +337,10 @@ func _spawn_enemy(is_boss: bool, index: int, count: int) -> void:
 		"max_hp": hp,
 		"boss": is_boss,
 		"hit_cd": rng.randf_range(0.0, 0.4),
-		"shoot_cd": 0.8
+		"shoot_cd": 0.8,
+		"model": model,
+		"anim_phase": rng.randf_range(0.0, TAU),
+		"attack_anim": 0.0
 	})
 
 
@@ -342,6 +353,7 @@ func _update_enemies(delta: float) -> void:
 
 		enemy["hit_cd"] = maxf(0.0, float(enemy["hit_cd"]) - delta)
 		enemy["shoot_cd"] = maxf(0.0, float(enemy["shoot_cd"]) - delta)
+		enemy["attack_anim"] = maxf(0.0, float(enemy["attack_anim"]) - delta)
 
 		var offset := player.global_position - node.global_position
 		offset.y = 0.0
@@ -351,23 +363,80 @@ func _update_enemies(delta: float) -> void:
 
 		var is_boss := bool(enemy["boss"])
 		var stop_range := 3.5 if is_boss else 1.05
+		var moving_amount := 0.0
 		if distance > stop_range:
 			var enemy_speed := 2.25 if is_boss else 2.1 + float(wave) * 0.15
 			node.position += offset.normalized() * enemy_speed * delta
+			moving_amount = 1.0
+
+		_animate_character(enemy["model"] as Node3D, moving_amount, anim_clock * (5.6 if is_boss else 7.2) + float(enemy["anim_phase"]), float(enemy["attack_anim"]), is_boss)
 
 		if not is_boss and distance < 1.25 and float(enemy["hit_cd"]) <= 0.0:
 			enemy["hit_cd"] = 0.8
+			enemy["attack_anim"] = 0.28
 			_damage_player(10.0 + float(wave) * 1.5)
 
 		if is_boss:
 			if distance < 1.65 and float(enemy["hit_cd"]) <= 0.0:
 				enemy["hit_cd"] = 0.7
+				enemy["attack_anim"] = 0.34
 				_damage_player(18.0)
 			if float(enemy["shoot_cd"]) <= 0.0:
 				enemy["shoot_cd"] = 1.15
 				var origin := node.global_position + Vector3(0.0, 1.1, 0.0)
 				var dir := (player.global_position + Vector3(0.0, 0.6, 0.0) - origin).normalized()
 				_spawn_projectile(origin, dir * 8.2, 14.0, true)
+
+
+
+func _find_part(root: Node, part_name: String) -> Node3D:
+	if root.name.to_lower() == part_name:
+		return root as Node3D
+	for child in root.get_children():
+		var found := _find_part(child, part_name)
+		if found != null:
+			return found
+	return null
+
+
+func _animate_character(model: Node3D, move_amount: float, phase: float, attack_left: float, is_boss: bool) -> void:
+	if model == null:
+		return
+
+	var walk := sin(phase) * move_amount
+	var bob := abs(sin(phase * 2.0)) * 0.018 * move_amount
+	var recoil := 0.0
+	if attack_left > 0.0:
+		recoil = sin((attack_left / 0.34) * PI) if is_boss else sin((attack_left / 0.28) * PI)
+
+	# Whole-body motion is also kept as fallback for source models without rigged parts.
+	model.position.y = bob
+	model.rotation.z = sin(phase * 0.5) * 0.018 * move_amount
+	model.rotation.x = -0.09 * recoil if is_boss else -0.035 * recoil
+
+	var left_arm := _find_part(model, "left_arm")
+	var right_arm := _find_part(model, "right_arm")
+	var left_leg := _find_part(model, "left_leg")
+	var right_leg := _find_part(model, "right_leg")
+	var head := _find_part(model, "head")
+	var torso := _find_part(model, "torso")
+
+	if left_leg != null:
+		left_leg.rotation.x = walk * 0.58
+	if right_leg != null:
+		right_leg.rotation.x = -walk * 0.58
+	if left_arm != null:
+		left_arm.rotation.x = -walk * 0.42 - recoil * (0.35 if is_boss else 0.12)
+		left_arm.rotation.z = recoil * (0.34 if is_boss else 0.05)
+	if right_arm != null:
+		right_arm.rotation.x = walk * 0.42 - recoil * (0.95 if not is_boss else 0.45)
+		right_arm.rotation.z = -recoil * (0.18 if not is_boss else 0.32)
+	if torso != null:
+		torso.rotation.y = sin(phase) * 0.05 * move_amount
+		torso.rotation.x = -recoil * 0.10
+	if head != null:
+		head.rotation.y = -sin(phase) * 0.035 * move_amount
+		head.rotation.x = recoil * 0.06
 
 
 func _nearest_enemy() -> Dictionary:
