@@ -31,14 +31,16 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android export packages
+      - name: Ensure Android export packages
         shell: bash
         run: |
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager "platform-tools" "build-tools;35.0.1" "platforms;android-35"
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | sort -V | tail -1)"
+          fi
+          test -x "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" "platform-tools" "build-tools;35.0.1" "platforms;android-35"
 
       - name: Setup Godot
         uses: chickensoft-games/setup-godot@v2
@@ -73,7 +75,7 @@ jobs:
         run: godot --headless --path . --import
 
       - name: Export debug APK
-        run: godot --headless --path . --export-debug "Android" build/ReaperProtocol-v0.1.0.apk
+        run: godot --headless --verbose --path . --export-debug "Android" build/ReaperProtocol-v0.1.0.apk
 
       - name: Verify APK
         run: |
